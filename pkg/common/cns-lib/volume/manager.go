@@ -34,6 +34,7 @@ import (
 	"github.com/vmware/govmomi/vim25/mo"
 	vim25types "github.com/vmware/govmomi/vim25/types"
 	"github.com/vmware/govmomi/vslm"
+	"github.com/vmware/govmomi/vslm/types"
 
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/pkg/common/cns-lib/vsphere"
 )
@@ -81,6 +82,8 @@ type Manager interface {
 	RegisterDisk(ctx context.Context, path string, name string) (string, error)
 	// RetrieveVStorageObject helps in retreiving virtual disk information for a given volume id
 	RetrieveVStorageObject(ctx context.Context, volumeID string) (*vim25types.VStorageObject, error)
+	// RetrieveVStorageObjectAssociations helps to retreive VM associations for a given volumes
+	RetrieveVStorageObjectAssociations(ctx context.Context, volumeIDs []string) (*[]types.VslmVsoVStorageObjectAssociations, error)
 }
 
 // CnsVolumeInfo hold information related to volume created by CNS
@@ -1013,4 +1016,33 @@ func (m *defaultManager) RetrieveVStorageObject(ctx context.Context, volumeID st
 	log.Infof("Successfully retrieved vStorageObject object for volumeID: %q", volumeID)
 	log.Debugf("vStorageObject for volumeID: %q is %+v", volumeID, vStorageObject)
 	return vStorageObject, nil
+}
+
+// RetrieveVStorageObjectAssociations helps to retreive VM associations for a given volumes
+func (m *defaultManager) RetrieveVStorageObjectAssociations(ctx context.Context, volumeIDs []string) (*[]types.VslmVsoVStorageObjectAssociations, error) {
+	log := logger.GetLogger(ctx)
+	err := validateManager(ctx, m)
+	if err != nil {
+		log.Errorf("failed to validate volume manager with err: %+v", err)
+		return nil, err
+	}
+	// Set up the VC connection
+	err = m.virtualCenter.ConnectVslm(ctx)
+	if err != nil {
+		log.Errorf("ConnectVslm failed with err: %+v", err)
+		return nil, err
+	}
+	globalObjectManager := vslm.NewGlobalObjectManager(m.virtualCenter.VslmClient)
+	var ids []vim25types.ID
+	for _, volID := range volumeIDs {
+		ids = append(ids, vim25types.ID{Id: volID})
+	}
+	vStorageObjectAssociations, err := globalObjectManager.RetrieveAssociations(ctx, ids)
+	if err != nil {
+		log.Errorf("failed to retrieve vm associations for volumes: %v with err: %v", volumeIDs, err)
+		return nil, err
+	}
+	log.Infof("Successfully retrieved vm assocations for volumes: %v", volumeIDs)
+	log.Debugf("vStorageObjectAssociations for volumes: %+v is %+v", volumeIDs, vStorageObjectAssociations)
+	return &vStorageObjectAssociations, nil
 }

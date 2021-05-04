@@ -43,6 +43,8 @@ type COCommonInterface interface {
 	MarkFakeAttached(ctx context.Context, volumeID string) error
 	// Check if the volume was fake attached, and unmark it as not fake attached.
 	ClearFakeAttached(ctx context.Context, volumeID string) error
+	// GetNodeIDtoNameMap gets node ID to node name map.
+	GetNodeIDtoNameMap(ctx context.Context) map[string]string
 }
 
 // GetContainerOrchestratorInterface returns orchestrator object

@@ -152,6 +152,7 @@ func UseVslmAPIs(ctx context.Context, aboutInfo vim25types.AboutInfo) (bool, err
 	log := logger.GetLogger(ctx)
 	items := strings.Split(aboutInfo.ApiVersion, ".")
 	apiVersion := strings.Join(items[:], "")
+	log.Infof("balu - apiVersion: %q", apiVersion)
 	// Convert version string to string, Ex: "6.7.3" becomes 673, "7.0.0.0" becomes 700
 	vSphereVersionInt, err := strconv.Atoi(apiVersion[0:3])
 	if err != nil {
