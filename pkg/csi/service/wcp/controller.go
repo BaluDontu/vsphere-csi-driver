@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,8 @@ var (
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
+		csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
+		csi.ControllerServiceCapability_RPC_LIST_VOLUMES_PUBLISHED_NODES,
 	}
 )
 
@@ -690,7 +693,87 @@ func (c *controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 	ctx = logger.NewContextWithLogger(ctx)
 	log := logger.GetLogger(ctx)
 	log.Infof("ListVolumes: called with args %+v", *req)
-	return nil, status.Error(codes.Unimplemented, "")
+	start := 0
+	nextTokenString := ""
+	if req.StartingToken != "" {
+		var err error
+		start, err = strconv.Atoi(req.StartingToken)
+		if err != nil {
+			return nil, status.Errorf(codes.Aborted, "ListVolumes starting token(%s) parsing with error: %v", req.StartingToken, err)
+		}
+		if start < 0 {
+			return nil, status.Errorf(codes.Aborted, "ListVolumes starting token(%d) can not be negative", start)
+		}
+	}
+
+	// Get all CNS volumes from VC
+	queryResult, err := common.GetCNSVolumes(ctx, c.manager, start)
+	if err != nil {
+		msg := fmt.Sprintf("failed to get GetCNSVolumes with error: %+v", err)
+		log.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+
+	if queryResult.Cursor.TotalRecords > queryResult.Cursor.Offset {
+		nextTokenString = strconv.Itoa(int(queryResult.Cursor.Offset))
+	}
+
+	// Retrieve VM associations for the volume
+	var volumeIDs []string
+	for _, vol := range queryResult.Volumes {
+		volumeIDs = append(volumeIDs, vol.VolumeId.Id)
+	}
+	entries := []*csi.ListVolumesResponse_Entry{}
+	if len(volumeIDs) == 0 {
+		listVolumesResp := &csi.ListVolumesResponse{
+			Entries:   entries,
+			NextToken: "",
+		}
+		return listVolumesResp, nil
+	}
+	volVmAssocationMap, err := common.GetVMVolAssociations(ctx, c.manager, volumeIDs)
+	if err != nil {
+		msg := fmt.Sprintf("failed to get VM volume associations with error: %+v", err)
+		log.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+
+	vmHostAssocationMap, err := common.GetVMHostAssociations(ctx, c.manager, c.manager.CnsConfig.Global.ClusterID)
+	if err != nil {
+		msg := fmt.Sprintf("failed to get VM host associations with error: %+v", err)
+		log.Errorf(msg)
+		return nil, status.Error(codes.Internal, msg)
+	}
+
+	nodeMoIDToNameMap := commonco.ContainerOrchestratorUtility.GetNodeIDtoNameMap(ctx)
+
+	vmHostMap := *vmHostAssocationMap
+	for volID, vmID := range *volVmAssocationMap {
+		var nodeList []string
+		if vmID != "" {
+			// Check the host to which VM belongs
+			if hostID, exists1 := vmHostMap[vmID]; exists1 {
+				// Get the corresponsing K8s node name for the host
+				if nodeName, exists2 := nodeMoIDToNameMap[hostID]; exists2 {
+					nodeList = append(nodeList, nodeName)
+				}
+			}
+		}
+		entries = append(entries, &csi.ListVolumesResponse_Entry{
+			Volume: &csi.Volume{
+				VolumeId: volID,
+			},
+			Status: &csi.ListVolumesResponse_VolumeStatus{
+				PublishedNodeIds: nodeList,
+			},
+		})
+	}
+	listVolumesResp := &csi.ListVolumesResponse{
+		Entries:   entries,
+		NextToken: nextTokenString,
+	}
+	log.Infof("listVolumesResp is : %+v", listVolumesResp)
+	return listVolumesResp, nil
 }
 
 func (c *controller) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (

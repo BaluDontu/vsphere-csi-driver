@@ -23,6 +23,9 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/property"
+	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/types"
 	vim25types "github.com/vmware/govmomi/vim25/types"
 	vsanfstypes "github.com/vmware/govmomi/vsan/vsanfs/types"
 	"golang.org/x/net/context"
@@ -518,6 +521,79 @@ func QueryVolumeByID(ctx context.Context, volManager cnsvolume.Manager, volumeID
 		return nil, ErrNotFound
 	}
 	return &queryResult.Volumes[0], nil
+}
+
+// GetCNSVolumes gets all CNS volumes from VC
+func GetCNSVolumes(ctx context.Context, manager *Manager, start int) (*cnstypes.CnsQueryResult, error) {
+	log := logger.GetLogger(ctx)
+	queryFilter := cnstypes.CnsQueryFilter{
+		Cursor: &cnstypes.CnsCursor{
+			Offset: int64(start),
+			Limit:  500,
+		},
+	}
+	querySelection := cnstypes.CnsQuerySelection{}
+	// Query only the backing object details.
+	queryResult, err := manager.VolumeManager.QueryAllVolume(ctx, queryFilter, querySelection)
+	if err != nil {
+		log.Errorf("failed to call QueryAllVolume with error: %+v", err)
+		return nil, err
+	}
+	return queryResult, nil
+}
+
+// GetVMVolAssociations gets the vm associations for all the volumes
+func GetVMVolAssociations(ctx context.Context, manager *Manager, volumeIDs []string) (*map[string]string, error) {
+	log := logger.GetLogger(ctx)
+	volumeAssociations, err := manager.VolumeManager.RetrieveVStorageObjectAssociations(ctx, volumeIDs)
+	if err != nil {
+		log.Error("RetrieveVStorageObjectAssociations failed with error: %+v", err)
+		return nil, err
+	}
+	volVmAssocationMap := make(map[string]string)
+	for _, volAssociations := range *volumeAssociations {
+		if volAssociations.VmDiskAssociation != nil {
+			volVmAssocationMap[volAssociations.Id.Id] = volAssociations.VmDiskAssociation[0].VmId
+		} else {
+			volVmAssocationMap[volAssociations.Id.Id] = ""
+		}
+	}
+	return &volVmAssocationMap, nil
+}
+
+// GetVMHostAssociations gets the VM to host map in a cluster
+func GetVMHostAssociations(ctx context.Context, manager *Manager, clusterID string) (*map[string]string, error) {
+	log := logger.GetLogger(ctx)
+	vc, err := GetVCenter(ctx, manager)
+	if err != nil {
+		log.Errorf("Failed to get vCenter from Manager. Error: %+v", err)
+		return nil, err
+	}
+	hosts, err := vc.GetHostsByCluster(ctx, clusterID)
+	if err != nil {
+		log.Errorf("Failed to get hosts from VC. Err: %+v", err)
+		return nil, err
+	}
+	var hostMorefList []types.ManagedObjectReference
+	for _, host := range hosts {
+		hostMorefList = append(hostMorefList, host.Reference())
+	}
+	var hostMoList []mo.HostSystem
+	pc := property.DefaultCollector(vc.Client.Client)
+	properties := []string{"vm"}
+	err = pc.Retrieve(ctx, hostMorefList, properties, &hostMoList)
+	if err != nil {
+		log.Errorf("failed to get host managed objects"+
+			" hostMorefList: %+v, properties: %+v, err: %v", hostMorefList, properties, err)
+		return nil, err
+	}
+	vmHostAssocationMap := make(map[string]string)
+	for _, hostMo := range hostMoList {
+		for _, vm := range hostMo.Vm {
+			vmHostAssocationMap[vm.Reference().Value] = hostMo.Reference().Value
+		}
+	}
+	return &vmHostAssocationMap, nil
 }
 
 // Helper function to get DatastoreMoRefs

@@ -100,6 +100,27 @@ func (m *volumeIDToPvcMap) get(volumeHandle string) string {
 	return m.items[volumeHandle]
 }
 
+// Map of nodeID to the node name in the cluster.
+// The methods to add, remove and get entries from the map in a threadsafe manner are defined.
+type nodeIDtoNameMap struct {
+	*sync.RWMutex
+	items map[string]string
+}
+
+// Adds an entry to nodeIDtoNameMap in a thread safe manner.
+func (m *nodeIDtoNameMap) add(nodeID string, nodeName string) {
+	m.Lock()
+	defer m.Unlock()
+	m.items[nodeID] = nodeName
+}
+
+// Removes the nodeID from nodeIDtoNameMap in a thread safe manner.
+func (m *nodeIDtoNameMap) remove(nodeID string) {
+	m.Lock()
+	defer m.Unlock()
+	delete(m.items, nodeID)
+}
+
 // K8sOrchestrator defines set of properties specific to K8s
 type K8sOrchestrator struct {
 	supervisorFSS    FSSConfigMapInfo
@@ -108,6 +129,7 @@ type K8sOrchestrator struct {
 	clusterFlavor    cnstypes.CnsClusterFlavor
 	volumeIDToPvcMap *volumeIDToPvcMap
 	k8sClient        clientset.Interface
+	nodeIDtoNameMap  *nodeIDtoNameMap
 }
 
 // K8sGuestInitParams lists the set of parameters required to run the init for K8sOrchestrator in Guest cluster
@@ -166,6 +188,7 @@ func Newk8sOrchestrator(ctx context.Context, controllerClusterFlavor cnstypes.Cn
 
 				initVolumeHandleToPvcMap(ctx)
 			}
+			initNodeIDtoNameMap(ctx)
 			k8sOrchestratorInstance.informerManager.Listen()
 			atomic.StoreUint32(&k8sOrchestratorInstanceInitialized, 1)
 			log.Info("k8sOrchestratorInstance initialized")
@@ -644,6 +667,29 @@ func initVolumeHandleToPvcMap(ctx context.Context) {
 	)
 }
 
+// initNodeIDtoNameMap performs all the operations required to initialize the node id to node name map.
+// It also watches for node add and delete operations, and updates the map accordingly.
+func initNodeIDtoNameMap(ctx context.Context) {
+	log := logger.GetLogger(ctx)
+	log.Debugf("Initializing volume ID to PVC name map")
+	k8sOrchestratorInstance.nodeIDtoNameMap = &nodeIDtoNameMap{
+		RWMutex: &sync.RWMutex{},
+		items:   make(map[string]string),
+	}
+	k8sOrchestratorInstance.informerManager.AddNodeListener(
+		// Add
+		func(obj interface{}) {
+			nodeAdd(obj)
+		},
+		// Update
+		nil,
+		// Delete
+		func(obj interface{}) {
+			nodeDelete(obj)
+		},
+	)
+}
+
 // Since informerManager's sharedInformerFactory is started with no resync period, it never syncs the
 // existing cluster objects to its Store when it's started.
 // pvcAdded provides no additional handling but it ensures that existing PVCs in the cluster
@@ -731,6 +777,44 @@ func pvDeleted(obj interface{}) {
 	if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == csitypes.Name {
 		k8sOrchestratorInstance.volumeIDToPvcMap.remove(pv.Spec.CSI.VolumeHandle)
 		log.Debugf("k8sorchestrator: Deleted key %s from volumeIDToPvcMap", pv.Spec.CSI.VolumeHandle)
+	}
+}
+
+// nodeAdd adds an entry to nodeIDtoNameMap when a node gets added
+func nodeAdd(obj interface{}) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+	node, ok := obj.(*v1.Node)
+	if node == nil || !ok {
+		log.Warnf("nodeAdd: unrecognized object %+v", obj)
+		return
+	}
+	nodeAnnotations := node.Annotations
+	val, exists := nodeAnnotations["vmware-system-esxi-node-moid"]
+	if exists {
+		k8sOrchestratorInstance.nodeIDtoNameMap.add(val, node.Name)
+		log.Infof("nodeAdd: Added '%s -> %s' pair to nodeIDtoNameMap", val, node.Name)
+	}
+}
+
+// nodeDelete deletes an entry from nodeIDtoNameMap when a node gets deleted
+func nodeDelete(obj interface{}) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = logger.NewContextWithLogger(ctx)
+	log := logger.GetLogger(ctx)
+	node, ok := obj.(*v1.Node)
+	if node == nil || !ok {
+		log.Warnf("nodeDelete: unrecognized object %+v", obj)
+		return
+	}
+	nodeAnnotations := node.Annotations
+	val, exists := nodeAnnotations["vmware-system-esxi-node-moid"]
+	if exists {
+		k8sOrchestratorInstance.nodeIDtoNameMap.remove(val)
+		log.Infof("nodeDelete: Deleted key %s from nodeIDtoNameMap", val)
 	}
 }
 
@@ -897,4 +981,8 @@ func (c *K8sOrchestrator) ClearFakeAttached(ctx context.Context, volumeID string
 		}
 	}
 	return nil
+}
+
+func (c *K8sOrchestrator) GetNodeIDtoNameMap(ctx context.Context) map[string]string {
+	return c.nodeIDtoNameMap.items
 }
