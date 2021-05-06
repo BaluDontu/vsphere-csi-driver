@@ -54,6 +54,8 @@ type Manager interface {
 	// nodes. If nodes are added or removed concurrently, they may or may not be
 	// reflected in the result of a call to this method.
 	GetAllNodes(ctx context.Context) ([]*vsphere.VirtualMachine, error)
+	// GetNodeNameByVmMoID gets the K8S node name associated with VM on VC.
+	GetNodeNameByVmMoID(ctx context.Context, vmMoID string) string
 	// UnregisterNode unregisters a registered node given its name.
 	UnregisterNode(ctx context.Context, nodeName string) error
 }
@@ -85,8 +87,12 @@ func GetManager(ctx context.Context) Manager {
 type defaultManager struct {
 	// nodeVMs maps node UUIDs to VirtualMachine objects.
 	nodeVMs sync.Map
-	// node name to node UUI map.
+	// node name to node UUID map.
 	nodeNameToUUID sync.Map
+	// node UUID to node name map.
+	nodeUUIDToName sync.Map
+	// node name to VM MoID map.
+	nodeNameToVmMoID sync.Map
 	// k8s client
 	k8sClient clientset.Interface
 }
@@ -100,6 +106,7 @@ func (m *defaultManager) SetKubernetesClient(client clientset.Interface) {
 func (m *defaultManager) RegisterNode(ctx context.Context, nodeUUID string, nodeName string) error {
 	log := logger.GetLogger(ctx)
 	m.nodeNameToUUID.Store(nodeName, nodeUUID)
+	m.nodeUUIDToName.Store(nodeUUID, nodeName)
 	log.Infof("Successfully registered node: %q with nodeUUID %q", nodeName, nodeUUID)
 	err := m.DiscoverNode(ctx, nodeUUID)
 	if err != nil {
@@ -120,6 +127,14 @@ func (m *defaultManager) DiscoverNode(ctx context.Context, nodeUUID string) erro
 		return err
 	}
 	m.nodeVMs.Store(nodeUUID, vm)
+	nodeName, found := m.nodeUUIDToName.Load(nodeUUID)
+	if !found {
+		log.Errorf("Node not found with UUID %s", nodeUUID)
+		return ErrNodeNotFound
+	}
+	if nodeName != nil && nodeName.(string) != "" {
+		m.nodeNameToVmMoID.Store(nodeName, vm.Reference().Value)
+	}
 	log.Infof("Successfully discovered node with nodeUUID %s in vm %v", nodeUUID, vm)
 	return nil
 }
@@ -143,6 +158,7 @@ func (m *defaultManager) GetNodeByName(ctx context.Context, nodeName string) (*v
 		return nil, err
 	}
 	m.nodeNameToUUID.Store(nodeName, k8snodeUUID)
+	m.nodeUUIDToName.Store(k8snodeUUID, nodeName)
 	return m.GetNode(ctx, k8snodeUUID, nil)
 
 }
@@ -163,6 +179,14 @@ func (m *defaultManager) GetNode(ctx context.Context, nodeUUID string, dc *vsphe
 				return nil, err
 			}
 			m.nodeVMs.Store(nodeUUID, vm)
+			nodeName, found := m.nodeUUIDToName.Load(nodeUUID)
+			if !found {
+				log.Errorf("Node not found with UUID %s", nodeUUID)
+				return nil, ErrNodeNotFound
+			}
+			if nodeName != nil && nodeName.(string) != "" {
+				m.nodeNameToVmMoID.Store(nodeName, vm.Reference().Value)
+			}
 		} else {
 			if err = m.DiscoverNode(ctx, nodeUUID); err != nil {
 				log.Errorf("failed to discover node with nodeUUID %s with err: %v", nodeUUID, err)
@@ -208,6 +232,7 @@ func (m *defaultManager) GetAllNodes(ctx context.Context) ([]*vsphere.VirtualMac
 				return true
 			}
 			m.nodeNameToUUID.Store(nodeName, k8snodeUUID)
+			m.nodeUUIDToName.Store(k8snodeUUID, nodeName)
 			return false
 		}
 		return true
@@ -253,6 +278,20 @@ func (m *defaultManager) GetAllNodes(ctx context.Context) ([]*vsphere.VirtualMac
 	return vms, nil
 }
 
+func (m *defaultManager) GetNodeNameByVmMoID(ctx context.Context, vmMoID string) string {
+	log := logger.GetLogger(ctx)
+	node := ""
+	m.nodeNameToVmMoID.Range(func(nodeNameInf, vmIDInf interface{}) bool {
+		vmID := vmIDInf.(string)
+		if vmID == vmMoID {
+			node = nodeNameInf.(string)
+		}
+		return true
+	})
+	log.Infof("balu - node for vmMoID: %s is %s", vmMoID, node)
+	return node
+}
+
 // UnregisterNode unregisters a registered node given its name.
 func (m *defaultManager) UnregisterNode(ctx context.Context, nodeName string) error {
 	log := logger.GetLogger(ctx)
@@ -262,7 +301,9 @@ func (m *defaultManager) UnregisterNode(ctx context.Context, nodeName string) er
 		return ErrNodeNotFound
 	}
 	m.nodeNameToUUID.Delete(nodeName)
+	m.nodeUUIDToName.Delete(nodeUUID)
 	m.nodeVMs.Delete(nodeUUID)
+	m.nodeNameToVmMoID.Delete(nodeName)
 	log.Infof("Successfully unregistered node with nodeName %s", nodeName)
 	return nil
 }

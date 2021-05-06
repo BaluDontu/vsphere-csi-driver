@@ -115,6 +115,12 @@ func (nodes *Nodes) GetAllNodes(ctx context.Context) ([]*cnsvsphere.VirtualMachi
 	return nodes.cnsNodeManager.GetAllNodes(ctx)
 }
 
+// GetAllNodes returns VirtualMachine for all registered.
+// This is called by ControllerExpandVolume to check if volume is attached to a node.
+func (nodes *Nodes) GetNodeNameByVmMoID(ctx context.Context, vmMoID string) string {
+	return nodes.cnsNodeManager.GetNodeNameByVmMoID(ctx, vmMoID)
+}
+
 // GetSharedDatastoresInTopology returns shared accessible datastores for specified topologyRequirement along with the map of
 // datastore URL and array of accessibleTopology map for each datastore returned from this function.
 // Here in this function, argument topologyRequirement can be passed in following form
