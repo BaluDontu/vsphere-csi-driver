@@ -284,4 +284,9 @@ const (
 	// a given replica can be placed on a node such that it does not have PVCs
 	// of any of its sibling replicas.
 	SiblingReplicaBoundPvcCheck = "sibling-replica-bound-pvc-check"
+	// DecoupleWithCPI is the feature to check if CSI needs to be decoupled
+	// CSI. If decoupled from CPI, CSI will no longer use Provider ID on
+	// K8s Node API object set by CPI. If not set, CSI will continue to use
+	// the Provider ID from K8s Node API object.
+	DecoupleWithCPI = "decouple-with-cpi"
 )
