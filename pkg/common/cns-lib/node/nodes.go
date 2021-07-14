@@ -186,6 +186,13 @@ func (nodes *Nodes) GetNodeByName(ctx context.Context, nodeName string) (
 	return nodes.cnsNodeManager.GetNodeByName(ctx, nodeName)
 }
 
+// GetNodeByUuid returns VirtualMachine object for given nodeUuid.
+// This is called by ControllerPublishVolume and ControllerUnpublishVolume
+// to perform attach and detach operations.
+func (nodes *Nodes) GetNodeByUuid(ctx context.Context, nodeUuid string) (*cnsvsphere.VirtualMachine, error) {
+	return nodes.cnsNodeManager.GetNode(ctx, nodeUuid, nil)
+}
+
 // GetAllNodes returns VirtualMachine for all registered.
 // This is called by ControllerExpandVolume to check if volume is attached to
 // a node.
