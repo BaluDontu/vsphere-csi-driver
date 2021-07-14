@@ -43,6 +43,7 @@ type Nodes struct {
 // if not, an informer on K8s Node API object is created.
 func (nodes *Nodes) Initialize(ctx context.Context, useK8sCSINodeObj bool) error {
 	nodes.cnsNodeManager = GetManager(ctx)
+	nodes.cnsNodeManager.SetUseK8sCSINodeObj(useK8sCSINodeObj)
 	k8sclient, err := k8s.NewClient(ctx)
 	if err != nil {
 		log := logger.GetLogger(ctx)
