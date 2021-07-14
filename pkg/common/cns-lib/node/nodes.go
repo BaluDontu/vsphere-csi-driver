@@ -19,13 +19,16 @@ package node
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/vmware/govmomi/vapi/tags"
 	v1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/pkg/common/cns-lib/vsphere"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
+	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/types"
 	k8s "sigs.k8s.io/vsphere-csi-driver/pkg/kubernetes"
 )
 
@@ -36,7 +39,9 @@ type Nodes struct {
 }
 
 // Initialize helps initialize node manager and node informer manager.
-func (nodes *Nodes) Initialize(ctx context.Context) error {
+// If useK8sCSINodeObj is set, an informer on K8s CSINode is created.
+// if not, an informer on K8s Node API object is created.
+func (nodes *Nodes) Initialize(ctx context.Context, useK8sCSINodeObj bool) error {
 	nodes.cnsNodeManager = GetManager(ctx)
 	k8sclient, err := k8s.NewClient(ctx)
 	if err != nil {
@@ -46,7 +51,13 @@ func (nodes *Nodes) Initialize(ctx context.Context) error {
 	}
 	nodes.cnsNodeManager.SetKubernetesClient(k8sclient)
 	nodes.informMgr = k8s.NewInformer(k8sclient)
-	nodes.informMgr.AddNodeListener(nodes.nodeAdd, nodes.nodeUpdate, nodes.nodeDelete)
+	if useK8sCSINodeObj {
+		nodes.informMgr.AddCSINodeListener(nodes.csiNodeAdd,
+			nodes.csiNodeUpdate, nodes.csiNodeDelete)
+	} else {
+		nodes.informMgr.AddNodeListener(nodes.nodeAdd,
+			nodes.nodeUpdate, nodes.nodeDelete)
+	}
 	nodes.informMgr.Listen()
 	return nil
 }
@@ -99,6 +110,70 @@ func (nodes *Nodes) nodeDelete(obj interface{}) {
 	err := nodes.cnsNodeManager.UnregisterNode(ctx, node.Name)
 	if err != nil {
 		log.Warnf("failed to unregister node:%q. err=%v", node.Name, err)
+	}
+}
+
+func (nodes *Nodes) csiNodeAdd(obj interface{}) {
+	ctx, log := logger.GetNewContextWithLogger()
+	csiNode, ok := obj.(*storagev1.CSINode)
+	if csiNode == nil || !ok {
+		log.Warnf("csiNodeAdd: unrecognized object %+v", obj)
+		return
+	}
+	nodeName := csiNode.Name
+	nodeId := k8s.GetNodeIdFromCSINode(csiNode)
+	if nodeId == "" || !strings.Contains(nodeId, types.ProviderIDPrefix) {
+		log.Warnf("csiNodeAdd: nodeId is either empty or doesn't "+
+			"contain ProviderIDPrefix: %q. CSINode object: %v",
+			types.ProviderIDPrefix, csiNode)
+		return
+	}
+	nodeUUID := strings.TrimPrefix(nodeId, types.ProviderIDPrefix)
+	err := nodes.cnsNodeManager.RegisterNode(ctx, nodeUUID, nodeName)
+	if err != nil {
+		log.Warnf("failed to register node:%q. err=%v", nodeName, err)
+	}
+}
+
+func (nodes *Nodes) csiNodeUpdate(oldObj interface{}, newObj interface{}) {
+	ctx, log := logger.GetNewContextWithLogger()
+	newCSINode, ok := newObj.(*storagev1.CSINode)
+	if !ok {
+		log.Warnf("csiNodeUpdate: unrecognized object newObj %[1]T%+[1]v", newObj)
+		return
+	}
+	oldCSINode, ok := oldObj.(*storagev1.CSINode)
+	if !ok {
+		log.Warnf("csiNodeUpdate: unrecognized object oldObj %[1]T%+[1]v", oldObj)
+		return
+	}
+	nodeName := newCSINode.Name
+	newNodeId := k8s.GetNodeIdFromCSINode(newCSINode)
+	oldNodeId := k8s.GetNodeIdFromCSINode(oldCSINode)
+	if oldNodeId != newNodeId && newNodeId != "" &&
+		strings.Contains(newNodeId, types.ProviderIDPrefix) {
+		log.Infof("csiNodeUpdate: Observed node UUID change from "+
+			"%q to %q for the node: %q", oldNodeId, newNodeId, nodeName)
+		newNodeUuid := strings.TrimPrefix(newNodeId, types.ProviderIDPrefix)
+		err := nodes.cnsNodeManager.RegisterNode(ctx, newNodeUuid, nodeName)
+		if err != nil {
+			log.Warnf("csiNodeUpdate: Failed to register node:%q. err=%v",
+				nodeName, err)
+		}
+	}
+}
+
+func (nodes *Nodes) csiNodeDelete(obj interface{}) {
+	ctx, log := logger.GetNewContextWithLogger()
+	csiNode, ok := obj.(*storagev1.CSINode)
+	if csiNode == nil || !ok {
+		log.Warnf("csiNodeDelete: unrecognized object %+v", obj)
+		return
+	}
+	nodeName := csiNode.Name
+	err := nodes.cnsNodeManager.UnregisterNode(ctx, nodeName)
+	if err != nil {
+		log.Warnf("failed to unregister node:%q. err=%v", nodeName, err)
 	}
 }
 

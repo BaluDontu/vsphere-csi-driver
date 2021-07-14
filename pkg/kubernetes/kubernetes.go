@@ -47,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	apiutils "sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
+	storagev1 "k8s.io/api/storage/v1"
 	cnsoperatorv1alpha1 "sigs.k8s.io/vsphere-csi-driver/pkg/apis/cnsoperator"
 	migrationv1alpha1 "sigs.k8s.io/vsphere-csi-driver/pkg/apis/migration/v1alpha1"
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/pkg/common/cns-lib/vsphere"
@@ -380,6 +381,17 @@ func CreateCustomResourceDefinitionFromManifest(ctx context.Context, fileName st
 	}
 	return createCustomResourceDefinition(ctx, manifestcrd)
 
+}
+
+// GetNodeIdFromCSINode gets the UUID from CSINode object
+func GetNodeIdFromCSINode(csiNode *storagev1.CSINode) string {
+	drivers := csiNode.Spec.Drivers
+	for _, driver := range drivers {
+		if driver.Name == types.Name {
+			return driver.NodeID
+		}
+	}
+	return ""
 }
 
 // createCustomResourceDefinition takes a custom resource definition spec and
