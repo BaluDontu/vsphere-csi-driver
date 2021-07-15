@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	vmoperatorv1alpha1 "github.com/vmware-tanzu/vm-operator-api/api/v1alpha1"
@@ -47,6 +48,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	apiutils "sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
+	storagev1 "k8s.io/api/storage/v1"
 	cnsoperatorv1alpha1 "sigs.k8s.io/vsphere-csi-driver/pkg/apis/cnsoperator"
 	migrationv1alpha1 "sigs.k8s.io/vsphere-csi-driver/pkg/apis/migration/v1alpha1"
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/pkg/common/cns-lib/vsphere"
@@ -291,18 +293,41 @@ func CreateKubernetesClientFromConfig(kubeConfigPath string) (clientset.Interfac
 	return client, nil
 }
 
-// GetNodeVMUUID returns vSphere VM UUID set by CCM on the Kubernetes Node.
-func GetNodeVMUUID(ctx context.Context, k8sclient clientset.Interface, nodeName string) (string, error) {
+// GetNodeUUID returns node UUID set by CCM on the
+// Kubernetes Node API object if is set to true.
+// If not set, returns node UUID from K8s CSINode API
+// object.
+func GetNodeUUID(ctx context.Context,
+	k8sclient clientset.Interface, nodeName string,
+	useK8sCSINodeObj bool) (string, error) {
 	log := logger.GetLogger(ctx)
-	log.Infof("GetNodeVMUUID called for the node: %q", nodeName)
-	node, err := k8sclient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	log.Infof("GetNodeUUID called for the node: %q with useK8sCSINodeObj: %s",
+		nodeName, useK8sCSINodeObj)
+	if !useK8sCSINodeObj {
+		node, err := k8sclient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			log.Errorf("failed to get kubernetes node with the name: %q. Err: %v", nodeName, err)
+			return "", err
+		}
+		k8sNodeUUID := cnsvsphere.GetUUIDFromProviderID(node.Spec.ProviderID)
+		log.Infof("Retrieved node UUID: %q for the node: %q", k8sNodeUUID, nodeName)
+		return k8sNodeUUID, nil
+	}
+	node, err := k8sclient.StorageV1().CSINodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
-		log.Errorf("failed to get kubernetes node with the name: %q. Err: %v", nodeName, err)
+		log.Errorf("failed to get K8s CSINode with the name: %q. "+
+			"Err: %v", nodeName, err)
 		return "", err
 	}
-	k8sNodeUUID := cnsvsphere.GetUUIDFromProviderID(node.Spec.ProviderID)
-	log.Infof("Retrieved node UUID: %q for the node: %q", k8sNodeUUID, nodeName)
-	return k8sNodeUUID, nil
+	nodeId := GetNodeIdFromCSINode(node)
+	if nodeId == "" {
+		log.Errorf("CSINode: %q with empty provider ID found. "+
+			"Err: %v", nodeName, err)
+		return "", err
+	}
+	nodeUuid := strings.TrimPrefix(nodeId, types.ProviderIDPrefix)
+	log.Infof("Retrieved node UUID: %q for the CSINode: %q", nodeUuid, nodeName)
+	return nodeUuid, nil
 }
 
 // getClientThroughput returns the QPS and Burst for the API server client.
@@ -380,6 +405,17 @@ func CreateCustomResourceDefinitionFromManifest(ctx context.Context, fileName st
 	}
 	return createCustomResourceDefinition(ctx, manifestcrd)
 
+}
+
+// GetNodeIdFromCSINode gets the UUID from CSINode object
+func GetNodeIdFromCSINode(csiNode *storagev1.CSINode) string {
+	drivers := csiNode.Spec.Drivers
+	for _, driver := range drivers {
+		if driver.Name == types.Name {
+			return driver.NodeID
+		}
+	}
+	return ""
 }
 
 // createCustomResourceDefinition takes a custom resource definition spec and

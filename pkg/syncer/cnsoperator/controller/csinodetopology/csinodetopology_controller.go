@@ -19,6 +19,7 @@ package csinodetopology
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ import (
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/common/commonco"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/csi/service/logger"
+	csitypes "sigs.k8s.io/vsphere-csi-driver/pkg/csi/types"
 	csinodetopologyv1alpha1 "sigs.k8s.io/vsphere-csi-driver/pkg/internalapis/csinodetopology/v1alpha1"
 	k8s "sigs.k8s.io/vsphere-csi-driver/pkg/kubernetes"
 	"sigs.k8s.io/vsphere-csi-driver/pkg/syncer"
@@ -196,8 +198,14 @@ func (r *ReconcileCSINodeTopology) Reconcile(ctx context.Context, request reconc
 	// Get NodeVM instance.
 	nodeID := instance.Spec.NodeID
 	nodeManager := node.GetManager(ctx)
-	// NOTE: NodeID is set to NodeName for now. Will be changed to NodeUUID in future.
-	nodeVM, err := nodeManager.GetNodeByName(ctx, nodeID)
+	var nodeVM *cnsvsphere.VirtualMachine
+	if strings.HasPrefix(nodeID, csitypes.ProviderIDPrefix) {
+		nodeUuid := strings.TrimPrefix(nodeID, csitypes.ProviderIDPrefix)
+		nodeVM, err = nodeManager.GetNode(ctx, nodeUuid, nil)
+	} else {
+		// NOTE: NodeID is set to NodeName for now. Will be changed to NodeUUID in future.
+		nodeVM, err = nodeManager.GetNodeByName(ctx, nodeID)
+	}
 	if err != nil {
 		// If nodeVM not found, ignore reconcile call.
 		log.Warnf("Ignoring update to CSINodeTopology CR with name %s as corresponding NodeVM seems to be deleted. "+

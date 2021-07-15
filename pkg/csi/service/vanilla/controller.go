@@ -49,12 +49,13 @@ import (
 
 // NodeManagerInterface provides functionality to manage (VM) nodes.
 type NodeManagerInterface interface {
-	Initialize(ctx context.Context) error
+	Initialize(ctx context.Context, useK8sCSINodeObj bool) error
 	GetSharedDatastoresInK8SCluster(ctx context.Context) ([]*cnsvsphere.DatastoreInfo, error)
 	GetSharedDatastoresInTopology(ctx context.Context, topologyRequirement *csi.TopologyRequirement,
 		tagManager *tags.Manager, zoneKey string, regionKey string) ([]*cnsvsphere.DatastoreInfo,
 		map[string][]map[string]string, error)
 	GetNodeByName(ctx context.Context, nodeName string) (*cnsvsphere.VirtualMachine, error)
+	GetNodeByUuid(ctx context.Context, nodeUuid string) (*cnsvsphere.VirtualMachine, error)
 	GetAllNodes(ctx context.Context) ([]*cnsvsphere.VirtualMachine, error)
 }
 
@@ -146,8 +147,13 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 		log.Errorf("checkAPI failed for vcenter API version: %s, err=%v", vc.Client.ServiceContent.About.ApiVersion, err)
 		return err
 	}
+
+	useK8sCSINodeObj := false
+	if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.DecoupleWithCPI) {
+		useK8sCSINodeObj = true
+	}
 	c.nodeMgr = &node.Nodes{}
-	err = c.nodeMgr.Initialize(ctx)
+	err = c.nodeMgr.Initialize(ctx, useK8sCSINodeObj)
 	if err != nil {
 		log.Errorf("failed to initialize nodeMgr. err=%v", err)
 		return err
@@ -303,8 +309,12 @@ func (c *controller) ReloadConfiguration() error {
 		c.manager.VcenterConfig = newVCConfig
 		c.manager.VolumeManager = cnsvolume.GetManager(ctx, vcenter, operationStore, idempotencyHandlingEnabled)
 		// Re-Initialize Node Manager to cache latest vCenter config.
+		useK8sCSINodeObj := false
+		if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.DecoupleWithCPI) {
+			useK8sCSINodeObj = true
+		}
 		c.nodeMgr = &node.Nodes{}
-		err = c.nodeMgr.Initialize(ctx)
+		err = c.nodeMgr.Initialize(ctx, useK8sCSINodeObj)
 		if err != nil {
 			log.Errorf("failed to re-initialize nodeMgr. err=%v", err)
 			return err
@@ -826,7 +836,13 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 						"failed to get VolumeID from volumeMigrationService for volumePath: %q", volumePath)
 				}
 			}
-			node, err := c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+			var node *cnsvsphere.VirtualMachine
+			if strings.HasPrefix(req.NodeId, csitypes.ProviderIDPrefix) {
+				node, err = c.nodeMgr.GetNodeByUuid(ctx,
+					strings.TrimPrefix(req.NodeId, csitypes.ProviderIDPrefix))
+			} else {
+				node, err = c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+			}
 			if err != nil {
 				return nil, logger.LogNewErrorCodef(log, codes.Internal,
 					"failed to find VirtualMachine for node:%q. Error: %v", req.NodeId, err)
@@ -933,7 +949,13 @@ func (c *controller) ControllerUnpublishVolume(ctx context.Context, req *csi.Con
 		}
 		// Block Volume.
 		volumeType = prometheus.PrometheusBlockVolumeType
-		node, err := c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+		var node *cnsvsphere.VirtualMachine
+		if strings.HasPrefix(req.NodeId, csitypes.ProviderIDPrefix) {
+			node, err = c.nodeMgr.GetNodeByUuid(ctx,
+				strings.TrimPrefix(req.NodeId, csitypes.ProviderIDPrefix))
+		} else {
+			node, err = c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+		}
 		if err != nil {
 			return nil, logger.LogNewErrorCodef(log, codes.Internal,
 				"failed to find VirtualMachine for node:%q. Error: %v", req.NodeId, err)
