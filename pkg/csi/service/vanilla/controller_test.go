@@ -149,7 +149,7 @@ func configFromEnvOrSim() (*config.Config, func()) {
 	return cfg, func() {}
 }
 
-func (f *FakeNodeManager) Initialize(ctx context.Context) error {
+func (f *FakeNodeManager) Initialize(ctx context.Context, useK8sCSINodeObj bool) error {
 	return nil
 }
 
@@ -206,7 +206,7 @@ func (f *FakeNodeManager) GetNodeByName(ctx context.Context, nodeName string) (*
 	var vm *cnsvsphere.VirtualMachine
 	var t *testing.T
 	if v := os.Getenv("VSPHERE_DATACENTER"); v != "" {
-		nodeUUID, err := k8s.GetNodeVMUUID(ctx, f.k8sClient, nodeName)
+		nodeUUID, err := k8s.GetNodeUUID(ctx, f.k8sClient, nodeName, false)
 		if err != nil {
 			t.Errorf("failed to get providerId from node: %q. Err: %v", nodeName, err)
 			return nil, err
@@ -214,6 +214,26 @@ func (f *FakeNodeManager) GetNodeByName(ctx context.Context, nodeName string) (*
 		vm, err = cnsvsphere.GetVirtualMachineByUUID(ctx, nodeUUID, false)
 		if err != nil {
 			t.Errorf("Couldn't find VM instance with nodeUUID %s, failed to discover with err: %v", nodeUUID, err)
+			return nil, err
+		}
+	} else {
+		obj := simulator.Map.Any("VirtualMachine").(*simulator.VirtualMachine)
+		vm = &cnsvsphere.VirtualMachine{
+			VirtualMachine: object.NewVirtualMachine(f.client, obj.Reference()),
+		}
+	}
+	return vm, nil
+}
+
+func (f *FakeNodeManager) GetNodeByUuid(ctx context.Context, nodeUuid string) (*cnsvsphere.VirtualMachine, error) {
+	var vm *cnsvsphere.VirtualMachine
+	var t *testing.T
+	if v := os.Getenv("VSPHERE_DATACENTER"); v != "" {
+		var err error
+		vm, err = cnsvsphere.GetVirtualMachineByUUID(ctx, nodeUuid, false)
+		if err != nil {
+			t.Errorf("Couldn't find VM instance with nodeUUID %s, failed to "+
+				"discover with err: %v", nodeUuid, err)
 			return nil, err
 		}
 	} else {

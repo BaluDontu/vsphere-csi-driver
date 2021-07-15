@@ -55,6 +55,7 @@ type NodeManagerInterface interface {
 		tagManager *tags.Manager, zoneKey string, regionKey string) ([]*cnsvsphere.DatastoreInfo,
 		map[string][]map[string]string, error)
 	GetNodeByName(ctx context.Context, nodeName string) (*cnsvsphere.VirtualMachine, error)
+	GetNodeByUuid(ctx context.Context, nodeUuid string) (*cnsvsphere.VirtualMachine, error)
 	GetAllNodes(ctx context.Context) ([]*cnsvsphere.VirtualMachine, error)
 }
 
@@ -835,7 +836,13 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 						"failed to get VolumeID from volumeMigrationService for volumePath: %q", volumePath)
 				}
 			}
-			node, err := c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+			var node *cnsvsphere.VirtualMachine
+			if strings.HasPrefix(req.NodeId, csitypes.ProviderIDPrefix) {
+				node, err = c.nodeMgr.GetNodeByUuid(ctx,
+					strings.TrimPrefix(req.NodeId, csitypes.ProviderIDPrefix))
+			} else {
+				node, err = c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+			}
 			if err != nil {
 				return nil, logger.LogNewErrorCodef(log, codes.Internal,
 					"failed to find VirtualMachine for node:%q. Error: %v", req.NodeId, err)
@@ -942,7 +949,13 @@ func (c *controller) ControllerUnpublishVolume(ctx context.Context, req *csi.Con
 		}
 		// Block Volume.
 		volumeType = prometheus.PrometheusBlockVolumeType
-		node, err := c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+		var node *cnsvsphere.VirtualMachine
+		if strings.HasPrefix(req.NodeId, csitypes.ProviderIDPrefix) {
+			node, err = c.nodeMgr.GetNodeByUuid(ctx,
+				strings.TrimPrefix(req.NodeId, csitypes.ProviderIDPrefix))
+		} else {
+			node, err = c.nodeMgr.GetNodeByName(ctx, req.NodeId)
+		}
 		if err != nil {
 			return nil, logger.LogNewErrorCodef(log, codes.Internal,
 				"failed to find VirtualMachine for node:%q. Error: %v", req.NodeId, err)
